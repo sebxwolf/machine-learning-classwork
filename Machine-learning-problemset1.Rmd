@@ -1,0 +1,425 @@
+---
+title: "Machine Learning Problem Set 1"
+author: "Sebastian Wolf"
+date: "31.01.2019"
+output: 
+  pdf_document:
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	tidy = TRUE,
+	tidy.opts = list(width.cutoff = 60)
+)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+library(tidyverse)
+library(parallel)
+library(gridExtra)
+library(ggExtra)
+library(ggpubr)
+```
+
+# Mean estimators
+
+For this problem, I sample from a Gaussian, a t-distribution with 2 and 3 degrees of freedom to test the performance of the empirical mean, the trimmed mean, and the median of means.
+
+I compare the probability of error (meaning the number of times, out of all trials, that the difference between estimated mean and true mean is more than the error threshold set, divided by the total number of trails) of the three estimators for different sample sizes, block-sizes (for the median of means) and trim-sizes (for the trimmed mean) over the error range [0-0.5]. I do this in two steps:
+
+(Figure 1) generate random vectors, one of each distribution, of lengths 10, 100, 1000 and 10000, and calculate the mean estimators keeping trim-size fixed at 10% of the sample and the number of blocks fixed at 10.
+(Figure 2) generate random vectors, one of each distribution, of lengths 20, and calculate the mean estimators, varying the trim-size of the trimmed mean from 0.1 to 0.4, and varying the number of blocks of the median of means estimator from 4-20
+
+Throughout, I generate 1000 trials to compute the probabilities.
+
+I expect the following from the results: the central limit theorem, which provides an exponential bound for the empirical mean for the probability of a tail event only holds asymptotically, so for small sample sizes we can bound the probability of a tail event for the empirical mean only by Chebychev's inequality, which is linear in n. The median of means has an exponential bound for the probability of a tail event that holds at any sample size, so we would expect that it bounds tail events better for small n, and for heavy tailed distributions which generate many tail events. We haven't looked at the bounds for the trimmed mean, but since this estimator cuts outliers it can be expected to perform well in heavy tailed distributions, too.
+
+```{r Question 1, cache=T}
+# Clean  workspace.
+rm(list=ls())
+
+# Set seed for random number generation.
+set.seed(1234)
+
+# Function that generates mutiple samples per distribution
+samples <- function(number_of_draws, size_of_draw, degrees_of_freedom=2, degrees_of_freedom2=3){
+  dimensions <- as.matrix(rep(size_of_draw, number_of_draws))
+  normal <- data.frame(apply(dimensions, 1, rnorm))
+  tdist2 <- data.frame(apply(dimensions, 1, rt, degrees_of_freedom))
+  tdist5 <- data.frame(apply(dimensions, 1, rt, degrees_of_freedom2))
+  df <- data.frame(normal = normal, tdist2 = tdist2, tdist5 = tdist5)
+  return(df)
+}
+
+# Function to calculate the median of means. Requires a vector and block size as input.
+median_of_means <- function(sample, block_size){
+  length <- length(sample)
+  median(matrix(sample, block_size) %*% matrix(rep(block_size/length), length/block_size))
+}
+
+# Function to calculate probability  of error of estimators.
+comparison <- function(size_of_draw=100, epsilon=0.2, list=c("normal","tdist2","tdist5"), number_of_draws=1000, trimming=0.1, blocks=10){
+  # create sample
+  sample <- samples(number_of_draws, size_of_draw)
+  df <- NULL
+  for (distribution in list){
+    emp_means <- sum(abs(apply(select(sample, starts_with(distribution)), 2, mean)) > epsilon) / number_of_draws
+    emp_trimmed_means <- sum(abs(apply(select(sample, starts_with(distribution)), 2, mean, trim=trimming)) > epsilon) / number_of_draws
+    emp_median_of_means <- sum(abs(apply(select(sample, starts_with(distribution)), 2, median_of_means, block_size=blocks)) > epsilon) / number_of_draws
+    df <- rbind(df, c(emp_means = emp_means, emp_trimmed_means = emp_trimmed_means, emp_median_of_means = emp_median_of_means))
+  }
+  row.names(df) <- list
+  return(df)
+}
+
+# Function to plot the results
+draw_graphs <- function(results=result, dimension, title){
+  # Reshape data for plotting
+  graph <- data.frame(dimension)
+  for (n in 1:length(dimension)){
+    graph$mean[n] <- result[[n]][1,1]
+    graph$tmean[n] <- result[[n]][1,2]
+    graph$median_means[n] <- result[[n]][1,3]
+    graph$tdist2_mean[n] <- result[[n]][2,1]
+    graph$tdist2_tmean[n] <- result[[n]][2,2]
+    graph$tdist2_median_means[n] <- result[[n]][2,3]
+    graph$tdist5_mean[n] <- result[[n]][3,1]
+    graph$tdist5_tmean[n] <- result[[n]][3,2]
+    graph$tdist5_median_means[n] <- result[[n]][3,3]
+  }
+
+  # Plotting routine
+  normal <- graph[c(1,2,3,4)] %>% gather(value = dimension, factor_key =T) %>% data.frame(dimension) %>%
+  ggplot() + geom_line(aes(x = dimension.1, y=dimension, color=key)) + labs(x=paste(title, "size", sep =" "), y="Probability of error", title = paste("Normal-distribution", sep=" ")) + theme(legend.position = "top")
+  
+  tdist2 <- graph[c(1,5,6,7)] %>% gather(value = dimension, factor_key =T) %>% data.frame(dimension) %>%
+  ggplot() + geom_line(aes(x = dimension.1, y=dimension, color=key)) + labs(x=paste(title, "size", sep =" "), y="Probability of error", title = paste("T-distribution 2df", sep=" "))
+  
+  tdist5 <- graph[c(1,8,9,10)] %>% gather(value = dimension, factor_key =T) %>% data.frame(dimension) %>%
+  ggplot() + geom_line(aes(x = dimension.1, y=dimension, color=key)) + labs(x=paste(title, "size", sep =" "), y="Probability of error", title = paste("T-distribution 5df", sep=" "))
+  
+  graphs <- list(normal, tdist2, tdist5)
+  return(graphs)
+}
+```
+
+
+```{r Question 1 output, cache=T}
+# Parameters
+# size_of_draws <- seq(100,1000,100)
+errors <- seq(0.01,0.5,0.01)
+
+# # Experiment for sample size
+# result <- map(size_of_draws,comparison)
+# names(result) <- size_of_draws
+# graphs_sample <- draw_graphs(result, size_of_draws, title="Sample")
+
+## Experiment 1
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=10)
+names(result) <- errors
+graphs_error <- draw_graphs(result, errors, title="Error")
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=100)
+names(result) <- errors
+graphs_error2 <- draw_graphs(result, errors, title="Error")
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=1000)
+names(result) <- errors
+graphs_error3 <- draw_graphs(result, errors, title="Error")
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=5000)
+names(result) <- errors
+graphs_error4 <- draw_graphs(result, errors, title="Error")
+```
+
+## Performance of mean estimators for various sample sizes - Figure 1
+
+```{r Question 1 output graphs, cache=T}
+
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+
+mylegend<-g_legend(graphs_error[[1]])
+
+grid.arrange(arrangeGrob(
+text_grob("Gaussian distribution", size=10),text_grob("T-distribution 2df", size=10),text_grob("T-distribution 3df", size=10),
+text_grob("n=10, blocks=10, trim=0.1", size=8),text_grob(""),text_grob(""),
+graphs_error[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL), 
+graphs_error[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL), 
+graphs_error[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL),
+text_grob("n=100, blocks=10, trim=0.1", size=8),text_grob(""),text_grob(""),
+graphs_error2[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error2[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error2[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) ,
+text_grob("n=1000, blocks=10, trim=0.1", size=8),text_grob(""),text_grob(""),
+graphs_error3[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error3[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error3[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) ,
+text_grob("n=10000, blocks=10, trim=0.1", size=8),text_grob(""),text_grob(""),
+graphs_error4[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error4[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error4[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , ncol=3, heights=c(3,1,10,1,10,1,10,1,10)), 
+mylegend, nrow=2, heights=c(47, 2), left=text_grob("Probability of error", size=10,rot=90), bottom=text_grob("Error size", size=10))
+
+```
+
+The results show that for the Gaussian distribution the empirical mean performs best at all sample sizes, whereas for the t-distribution of 2 and 3 degrees of freedom the trimmed mean performs best. The median of means performs well only at small sample sizes (when we use 10 blocks the median of mean is equivalent to the median in a sample of size 10).
+
+In figure 2, we focus on small samples and compare the empirical mean to the median of means with different block sizes and the trimmed mean with different trim sizes.
+
+```{r Question 1 output2, cache=T}
+# Parameters
+# size_of_draws <- seq(100,1000,100)
+errors <- seq(0.01,0.5,0.01)
+
+# # Experiment for sample size
+# result <- map(size_of_draws,comparison)
+# names(result) <- size_of_draws
+# graphs_sample <- draw_graphs(result, size_of_draws, title="Sample")
+
+## Experiment 2
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=20, blocks=4, trimming=0.1)
+names(result) <- errors
+graphs_error <- draw_graphs(result, errors, title="Error")
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=20, blocks=5, trimming=0.2)
+names(result) <- errors
+graphs_error2 <- draw_graphs(result, errors, title="Error")
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=20, blocks=10, trimming=0.3)
+names(result) <- errors
+graphs_error3 <- draw_graphs(result, errors, title="Error")
+
+# Experiment for error size
+result <- map(.x = errors, .f = comparison, size_of_draw=20, blocks=20, trimming=0.4)
+names(result) <- errors
+graphs_error4 <- draw_graphs(result, errors, title="Error")
+
+```
+
+## Performance of mean estimators for various trim sizes and numbers of blocks parameters - Figure 2
+
+```{r Question 1 output2 - graphs, cache=T}
+
+
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+
+mylegend<-g_legend(graphs_error[[1]])
+
+grid.arrange(arrangeGrob(
+text_grob("Gaussian distribution", size=10),text_grob("T-distribution 2df", size=10),text_grob("T-distribution 3df", size=10),
+text_grob("n=20, blocks=4, trim=0.1", size=8),text_grob(""),text_grob(""),
+graphs_error[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL), 
+graphs_error[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL), 
+graphs_error[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL),
+text_grob("n=20, blocks=5, trim=0.2", size=8),text_grob(""),text_grob(""),
+graphs_error2[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error2[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error2[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) ,
+text_grob("n=20, blocks=10, trim=0.3", size=8),text_grob(""),text_grob(""),
+graphs_error3[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error3[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error3[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) ,
+text_grob("n=20, blocks=20, trim=0.4", size=8),text_grob(""),text_grob(""),
+graphs_error4[[1]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error4[[2]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , 
+graphs_error4[[3]] + theme(legend.position="none") + labs(x=NULL, y=NULL, title=NULL) , ncol=3, heights=c(3,1,10,1,10,1,10,1,10)), 
+mylegend, nrow=2, heights=c(47, 2), left=text_grob("Probability of error", size=10, rot=90), bottom=text_grob("Error size", size=10))
+
+```
+
+Figure 2 shows that under a gaussian distribution the trimmed mean performs better when few observations are trimmed (as then it is similar to the empirical mean), and the median of means performs better when few blocks are used (again, then it is similar to the empirical mean). Under a t-distribution with 2 degrees of freedom, the median of means performs slightly better with more blocks, and the trimmed mean with higher trim values. These tendencies are less pronounced for the t-distribution with 3 degrees of freedom - since here the tails are less heavy.
+
+
+# Random vectors in d-dimensional cubes
+
+To derive the moments of the distribution of $\lVert \mathbf{X}^2 \rVert$ I note that
+$\lVert \mathbf{X} \rVert ^2 = \sum x_i^2$ and that each $x_i$ is independent. I can therefore derive moments for $x_i^2$ and multiply by d.
+
+## Moments
+
+### Mean
+
+$$
+E[x_i^2] = \int_{-1}^{1} x_i^2 \frac{1}{1-(-1)}dx = \frac{1}{2} \int_{-1}^{1} x_i^2 dx= \frac{1}{2} [\frac{1}{3} +\frac{1}{3} ] = \frac{1}{3}
+$$
+$$
+E[\lVert \mathbf{X} \rVert ^2] = \sum E[x_i^2] = \frac{d}{3}
+$$
+
+### Variance
+
+$$
+E[x_i^4] - E[x_i^2]^2 = \int_{-1}^{1} x_i^4 \frac{1}{1-(-1)}dx - \frac{1}{9} = \frac{1}{2} \int_{-1}^{1} x_i^4 dx- \frac{1}{9} = \frac{1}{2} [\frac{1}{5} +\frac{1}{5} ] - \frac{1}{9}= \frac{4}{45}
+$$
+
+$$
+Var[\lVert \mathbf{X} \rVert ^2] = \sum Var[x_i^2] = \frac{4d}{45}
+$$
+
+## Concentration inequalities
+
+### Markov
+
+$$
+P(\lVert \mathbf{X}\rVert ^2 >\epsilon) \leq \frac{E(\lVert \mathbf{X}\rVert ^2 )}{\epsilon} = \frac{d}{3\epsilon}
+$$
+
+### Chebychev
+
+$$
+P(|\lVert \mathbf{X}\rVert ^2 - \frac{d}{3} | >\epsilon) \leq \frac{4d}{45\epsilon^2}
+$$
+
+### Chernoff bound
+
+$$
+P(\lVert \mathbf{X}\rVert ^2 - \frac{d}{3}  \geq \epsilon) = P(e^{\lambda(\lVert \mathbf{X}\rVert ^2 - \frac{d}{3})}  \geq e^{\lambda \epsilon})
+$$
+$$
+P(e^{\lambda(\lVert \mathbf{X}\rVert ^2 - \frac{d}{3})}  \geq e^{\lambda \epsilon}) \leq \frac{Ee^{\lambda(\lVert \mathbf{X}\rVert ^2 - \frac{d}{3})}}{  e^{\lambda \epsilon} } = \frac{Ee^{\lambda(\sum x_i ^2 - \frac{d}{3})}}{  e^{\lambda \epsilon} } = \frac{E \prod e^{\lambda(x_i ^2 - \frac{1}{3})}}{  e^{\lambda \epsilon} } \overset{iid}{=}  \frac{\prod E e^{\lambda(x_i ^2 - \frac{1}{3})}}{  e^{\lambda \epsilon} } =  \frac{(E e^{\lambda(x_i ^2 - \frac{1}{3})})^d}{  e^{\lambda \epsilon} }
+$$
+I exponentiate and apply Markov inequality. I then make use of independence of the $x_i$ to move the expectation operator into the product. $x_i^2$ is bounded between [0,1] so I can apply Hoeffding's Lemma to get:
+$$
+P(\lVert \mathbf{X}\rVert ^2 - \frac{d}{3}  \geq \epsilon) \leq e^{\frac{d \lambda^2}{2} -\lambda \epsilon}
+$$
+This is a monotonous increasing function so I can optimise the exponent to get: $\lambda = \frac{\epsilon}{d}$.
+
+$$
+P(\lVert \mathbf{X}\rVert ^2 - \frac{d}{3}  \geq \epsilon) < e^{-\frac{\epsilon^2}{2d}}
+$$
+
+## Cosine
+
+I want to find a bound for the probability that the cosine is different from 0, meaning the probability that the two vectors are not orthogonal.
+$$
+P(|cos (\alpha)| \geq \epsilon) = P(|\frac{X^TX'}{\lVert \mathbf{X}\rVert \lVert \mathbf{X'}\rVert}| \geq \epsilon) 
+$$
+I already established that $E[\lVert \mathbf{X} \rVert ^2] = \frac{d}{3}$ and that $Var[\lVert \mathbf{X} \rVert ^2] = \frac{4d}{45}$ and so the denominator of the above fraction is of order $\frac{d}{3} +\sqrt\frac{4d}{45} = O(d)$. I use this to simplify the above probability and apply a Chernoff bound:
+
+$$
+P(|cos (\alpha)| \geq \epsilon)\leq 2P(X^TX') > d\epsilon) \leq 2 \frac{Ee^{\lambda X^TX'}}{e^{\lambda d\epsilon}} = 2 \frac{E \prod e^{ \lambda x_ix_i'}}{e^{\lambda d\epsilon}} \overset{iid}{=} 2 \frac{\prod E e^{\lambda x_ix_i'}}{e^{\lambda d \epsilon}}= 2 \frac{ (E e^{\lambda x_ix_i'})^d}{e^{\lambda d\epsilon}} 
+$$
+with the second last equality arising from independence of the $x_i$. I can now apply Hoeffding's lemma (given that $Ex_ix_i'=0$ and that x_ix_i' is bounded from [-1,1]) to get:
+$$
+P(\frac{X^TX'}{\lVert \mathbf{X}\rVert \lVert \mathbf{X'}\rVert} > \epsilon) \leq 2 e^{ \frac{\lambda^2d}{2} -\lambda \epsilon} 
+$$
+Which is optimised with $\lambda = \epsilon$.
+
+$$
+P(\frac{X^TX'}{\lVert \mathbf{X}\rVert \lVert \mathbf{X'}\rVert} > \epsilon)  \leq  2 e^{-\frac{ \epsilon^2d}{2} } 
+$$
+This means that the vectors will be very close to orthogonal in high dimensions:
+$$
+|cos(\alpha)| < \sqrt \frac{2log(\delta/2)}{d} \quad w.p. \quad 1-\delta
+$$
+
+# Chernoff bound
+
+To find the Chernoff bound of a non-negative random variable with given mean and variance, I start with exponentiating, applying Markov inequality, and using the independence property of the sample.
+
+$$
+P(\frac{1}{n}\sum_{i=1}^n x_i<m-t)=P(-\sum_{i=1}x_i > n(t-m)) \leq \frac{Ee^{-\lambda(\sum x_i)}}{e^{\lambda n(t-m)}} \overset{iid}{=} \frac{E(e^{-\lambda( x_i)})^n}{e^{\lambda n(t-m)}} 
+$$
+I can then use the hint:
+
+$$
+\leq \frac{E(1-\lambda x_i +\frac{\lambda^2x_i^2}{2})^n}{e^{\lambda n(t-m)}} = \frac{(1-\lambda m +\frac{\lambda^2a^2}{2})^n}{e^{\lambda n(t-m)}} 
+$$
+
+
+And using the fact that $1+x \leq e^x$ I get:
+$$
+P(\frac{1}{n}\sum_{i=1}^n x_i<m-t)\leq  e^{(-\lambda m +\frac{\lambda^2a^2}{2})^n - {\lambda n(t-m)}}= e^{n(\frac{\lambda^2a^2}{2}-\lambda t)}
+$$
+
+I can optimise this bound with $\lambda = \frac{t}{a^2}$, which gives the bound I am looking to prove:
+
+$$
+P(\frac{1}{n}\sum_{i=1}^n x_i<m-t) = e^{-\frac{nt^2}{2a^2}}
+$$
+
+# Random projections
+
+I generate random projections for vectors of size 5, 50 and 1000. I do not see a difference between the projected points and the random vectors. According to the Johnson-Lindenstrauss lemma, random projections allow for drastic dimensionality reductions that preserve the pairwise distances between the projected points if we allow for some slack in the distance. In this example, I would expect all points to have approximately equidistance between each other if the Lemma applied. The Lemma holds whenever $d \geq \frac{8log(n)}{\epsilon^2}$. In this example $d=2$ is small, so the Lemma holds only for small n and large $\epsilon$. If we took $\epsilon = 1$ we would get $1.28 \geq n$ - not a case of interest. If we allowed for a lot of slack, say $\epsilon = 3$ then $9.48\geq n$. However, then the initial distances would be unrecognizable.
+
+I show the three plots that overlay the projected points with the random vectors for sample sizes 5, 50 and 1000 below.
+
+
+```{r Question 4, cache=F, out.width = '80%'}
+generate_points <- function(size){
+  points <- diag(size) %*% cbind(rnorm(size, sd = 1/size), rnorm(size, sd = 1/size))
+  standardised_points <- (points - mean(points[,1]))/sd(points[,1])
+  random_vectors <- cbind(rnorm(size), rnorm(size))
+  group <- as.factor(rep(c("projected","not projected"), each=size))
+  df <- data.frame(rbind(standardised_points,random_vectors), group)
+  return(df)
+}
+
+n <- c(5,50,1000)
+
+points <- map(n,generate_points)
+
+# scatter plot of x and y variables
+# color by groups
+
+plot_points <- function(element = 1){
+  scatterPlot <- ggplot(points[[element]],aes(X1, X2, color=group)) + 
+  geom_point() + 
+  scale_color_manual(values = c('#999999','#E69F00')) + 
+  theme(legend.position=c(0,1), legend.justification=c(0,1)) + 
+  labs(title = sprintf('n = %1i',length(points[[element]]$X1)/2))
+
+# Marginal density plot of x (top panel)
+xdensity <- ggplot(points[[element]], aes(X1, fill=group)) + 
+  geom_density(alpha=.5) + 
+  scale_fill_manual(values = c('#999999','#E69F00')) + 
+  theme(legend.position = "none")
+
+# Marginal density plot of y (right panel)
+ydensity <- ggplot(points[[element]], aes(X2, fill=group)) + 
+  geom_density(alpha=.5) + 
+  scale_fill_manual(values = c('#999999','#E69F00')) + 
+  theme(legend.position = "none")
+
+blankPlot <- ggplot()+geom_blank(aes(1,1))+
+  theme(plot.background = element_blank(), 
+   panel.grid.major = element_blank(),
+   panel.grid.minor = element_blank(), 
+   panel.border = element_blank(),
+   panel.background = element_blank(),
+   axis.title.x = element_blank(),
+   axis.title.y = element_blank(),
+   axis.text.x = element_blank(), 
+   axis.text.y = element_blank(),
+   axis.ticks = element_blank()
+     )
+
+grid.arrange(xdensity, blankPlot, scatterPlot, ydensity, 
+        ncol=2, nrow=2, widths=c(4, 1.4), heights=c(1.4, 4))
+}
+
+for (i in seq(1,length(n),1)){
+  print(paste("Figure",2+i))
+  plot_points(i)
+}
+
+```
